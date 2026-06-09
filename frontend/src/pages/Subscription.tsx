@@ -54,6 +54,22 @@ export default function Subscription() {
     setError('')
     setSuccess('')
     try {
+      // Try Stripe checkout first
+      const config = await apiRequest<{ stripe_configured: boolean }>('/config').catch(() => ({ stripe_configured: false }))
+      
+      if (config.stripe_configured) {
+        // Use Stripe Checkout
+        const result = await apiRequest<{ url: string }>('/subscription/create-checkout', {
+          method: 'POST',
+          body: JSON.stringify({ tier }),
+        })
+        if (result.url) {
+          window.location.href = result.url
+          return
+        }
+      }
+      
+      // Fallback: direct subscription (dev/test mode)
       await apiRequest('/subscription/create', {
         method: 'POST',
         body: JSON.stringify({ tier }),

@@ -18,6 +18,19 @@ from auth import (
     get_current_user,
 )
 
+import stripe
+# Initialize Stripe from environment
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "")
+
+# Stripe price IDs per tier (set these in env or use defaults for dev)
+STRIPE_PRICE_MAP = {
+    "individual": os.environ.get("STRIPE_PRICE_INDIVIDUAL", "price_individual"),
+    "pastor": os.environ.get("STRIPE_PRICE_PASTOR", "price_pastor"),
+    "church": os.environ.get("STRIPE_PRICE_CHURCH", "price_church"),
+}
+
 # Create tables
 Base.metadata.create_all(bind=engine)
 
@@ -112,6 +125,19 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
         queries_remaining=PLANS["free"]["queries_per_month"],
         queries_limit=PLANS["free"]["queries_per_month"],
     )
+
+    # Create Stripe customer if Stripe is configured
+    if stripe.api_key:
+        try:
+            customer = stripe.Customer.create(
+                email=req.email,
+                name=req.name,
+                metadata={"user_id": user.id},
+            )
+            user.stripe_customer_id = customer.id
+        except stripe.error.StripeError:
+            pass  # Non-fatal if Stripe fails
+
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -517,13 +543,22 @@ This biblical teaching carries significant implications for faith and practice.
 
 
 # ============================================================
-# Subscription Routes
+# Subscription Routes (Stripe Integration)
 # ============================================================
 
 @app.get("/api/plans")
 def get_plans():
     """List available subscription plans."""
     return {tier: info for tier, info in PLANS.items() if tier != "free"}
+
+
+@app.get("/api/config")
+def get_config():
+    """Return public configuration (Stripe publishable key, etc.)."""
+    return {
+        "stripe_publishable_key": STRIPE_PUBLISHABLE_KEY,
+        "stripe_configured": bool(stripe.api_key),
+    }
 
 
 @app.get("/api/subscription")
@@ -539,7 +574,12 @@ def get_subscription(
         .first()
     )
     if not sub:
-        return {"tier": current_user.subscription_tier, "status": "none"}
+        return {
+            "tier": current_user.subscription_tier,
+            "status": current_user.subscription_status or "none",
+            "queries_remaining": current_user.queries_remaining,
+            "queries_limit": current_user.queries_limit,
+        }
     return {
         "id": sub.id,
         "tier": sub.tier,
@@ -547,7 +587,244 @@ def get_subscription(
         "period_start": sub.period_start.isoformat() if sub.period_start else None,
         "period_end": sub.period_end.isoformat() if sub.period_end else None,
         "created_at": sub.created_at.isoformat() if sub.created_at else None,
+        "queries_remaining": current_user.queries_remaining,
+        "queries_limit": current_user.queries_limit,
     }
+
+
+class StripeCheckoutRequest(BaseModel):
+    tier: str  # individual, pastor, church
+    success_url: str = ""
+    cancel_url: str = ""
+
+
+@app.post("/api/subscription/create-checkout")
+def create_checkout_session(
+    req: StripeCheckoutRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a Stripe Checkout Session for subscription."""
+    if not stripe.api_key:
+        raise HTTPException(status_code=503, detail="Stripe is not configured")
+
+    if req.tier not in PLANS or req.tier == "free":
+        raise HTTPException(status_code=400, detail=f"Invalid tier: {req.tier}")
+
+    price_id = STRIPE_PRICE_MAP.get(req.tier)
+    if not price_id or price_id.startswith("price_"):
+        raise HTTPException(status_code=503, detail="Stripe price ID not configured for this tier")
+
+    try:
+        # Create or retrieve Stripe customer
+        customer_id = current_user.stripe_customer_id
+        if not customer_id:
+            customer = stripe.Customer.create(
+                email=current_user.email,
+                name=current_user.name,
+                metadata={"user_id": current_user.id},
+            )
+            customer_id = customer.id
+            current_user.stripe_customer_id = customer_id
+            db.commit()
+
+        # Create checkout session
+        base_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+        session = stripe.checkout.Session.create(
+            customer=customer_id,
+            payment_method_types=["card"],
+            mode="subscription",
+            line_items=[{"price": price_id, "quantity": 1}],
+            success_url=req.success_url or f"{base_url}/subscription?success=true&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=req.cancel_url or f"{base_url}/subscription?canceled=true",
+            metadata={"user_id": current_user.id, "tier": req.tier},
+        )
+
+        return {"url": session.url, "session_id": session.id}
+
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=400, detail=f"Stripe error: {str(e)}")
+
+
+@app.post("/api/subscription/portal")
+def create_billing_portal(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a Stripe Customer Portal session for managing billing."""
+    if not stripe.api_key:
+        raise HTTPException(status_code=503, detail="Stripe is not configured")
+
+    customer_id = current_user.stripe_customer_id
+    if not customer_id:
+        raise HTTPException(status_code=400, detail="No Stripe customer found")
+
+    try:
+        base_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+        session = stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=f"{base_url}/subscription",
+        )
+        return {"url": session.url}
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=400, detail=f"Stripe error: {str(e)}")
+
+
+@app.post("/api/subscription/webhook")
+async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
+    """Handle Stripe webhook events for subscription lifecycle."""
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    if not stripe.api_key:
+        return {"status": "ignored", "reason": "Stripe not configured"}
+
+    # Verify webhook signature if secret is configured
+    if STRIPE_WEBHOOK_SECRET:
+        try:
+            event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+        except stripe.error.SignatureVerificationError:
+            raise HTTPException(status_code=400, detail="Invalid signature")
+    else:
+        # If no webhook secret, parse payload directly (not secure for production)
+        try:
+            event = json.loads(payload)
+            if isinstance(event, dict) and "type" not in event:
+                raise ValueError("Not a Stripe event")
+        except (json.JSONDecodeError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid payload")
+
+    event_type = event.get("type") if isinstance(event, dict) else event.type
+    event_data = event.get("data", {}).get("object", {}) if isinstance(event, dict) else event.data.object
+
+    # Handle subscription lifecycle events
+    if event_type.startswith("customer.subscription."):
+        subscription_id = event_data.get("id") if isinstance(event_data, dict) else event_data.id
+        customer_id = event_data.get("customer") if isinstance(event_data, dict) else event_data.customer
+        status = event_data.get("status") if isinstance(event_data, dict) else event_data.status
+
+        # Find user by Stripe customer ID
+        user = db.query(User).filter(User.stripe_customer_id == customer_id).first()
+        if not user:
+            return {"status": "ignored", "reason": "User not found"}
+
+        # Map Stripe status to our status
+        status_map = {
+            "active": "active",
+            "trialing": "trialing",
+            "past_due": "past_due",
+            "canceled": "canceled",
+            "incomplete": "incomplete",
+            "incomplete_expired": "canceled",
+            "unpaid": "past_due",
+        }
+        mapped_status = status_map.get(status, "active")
+
+        # Update user subscription status
+        if event_type in ("customer.subscription.created", "customer.subscription.updated"):
+            items = event_data.get("items", {}).get("data", []) if isinstance(event_data, dict) else event_data.items.data
+            price_id = items[0].price.id if items else None
+            current_period_end = event_data.get("current_period_end") if isinstance(event_data, dict) else event_data.current_period_end
+
+            # Determine tier from price ID (reverse lookup)
+            tier = "individual"
+            for t, pid in STRIPE_PRICE_MAP.items():
+                if price_id == pid:
+                    tier = t
+                    break
+
+            plan = PLANS.get(tier, PLANS["individual"])
+            user.subscription_tier = tier
+            user.queries_remaining = plan["queries_per_month"]
+            user.queries_limit = plan["queries_per_month"]
+            user.subscription_status = mapped_status
+
+            # Create/update subscription record
+            sub = (
+                db.query(Subscription)
+                .filter(
+                    Subscription.stripe_subscription_id == subscription_id,
+                )
+                .first()
+            )
+            if not sub:
+                sub = Subscription(
+                    user_id=user.id,
+                    tier=tier,
+                    status=mapped_status,
+                    stripe_subscription_id=subscription_id,
+                    stripe_customer_id=customer_id,
+                    period_start=datetime.utcnow(),
+                )
+                db.add(sub)
+            else:
+                sub.status = mapped_status
+                sub.tier = tier
+
+            if current_period_end:
+                sub.period_end = datetime.fromtimestamp(
+                    current_period_end if isinstance(current_period_end, (int, float)) else current_period_end.timestamp()
+                )
+
+        elif event_type == "customer.subscription.deleted":
+            user.subscription_tier = "free"
+            user.queries_remaining = PLANS["free"]["queries_per_month"]
+            user.queries_limit = PLANS["free"]["queries_per_month"]
+            user.subscription_status = "canceled"
+
+            sub = (
+                db.query(Subscription)
+                .filter(Subscription.stripe_subscription_id == subscription_id)
+                .first()
+            )
+            if sub:
+                sub.status = "canceled"
+
+        db.commit()
+
+    return {"status": "received"}
+
+
+@app.get("/api/subscription/check")
+def check_subscription_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Check and sync subscription status with Stripe."""
+    if not stripe.api_key or not current_user.stripe_customer_id:
+        return {"status": current_user.subscription_status or "inactive"}
+
+    try:
+        # List active subscriptions from Stripe
+        subscriptions = stripe.Subscription.list(
+            customer=current_user.stripe_customer_id,
+            status="all",
+            limit=1,
+        )
+        if subscriptions.data:
+            sub_data = subscriptions.data[0]
+            status_map = {
+                "active": "active",
+                "trialing": "trialing",
+                "past_due": "past_due",
+                "canceled": "canceled",
+                "incomplete": "incomplete",
+            }
+            mapped = status_map.get(sub_data.status, "active")
+
+            # Update local status if different
+            if current_user.subscription_status != mapped:
+                current_user.subscription_status = mapped
+                if mapped in ("canceled", "incomplete", "past_due") and current_user.subscription_tier != "free":
+                    pass  # Don't auto-downgrade; let webhook handle it
+                db.commit()
+
+            return {"status": mapped, "stripe_status": sub_data.status}
+        else:
+            return {"status": current_user.subscription_status or "none"}
+
+    except stripe.error.StripeError:
+        return {"status": current_user.subscription_status or "unknown"}
 
 
 @app.post("/api/subscription/create")
@@ -556,7 +833,7 @@ def create_subscription(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Create or update a subscription. For MVP, this is a simplified flow."""
+    """Create or update a subscription directly (for dev/test without Stripe)."""
     if req.tier not in PLANS:
         raise HTTPException(status_code=400, detail=f"Invalid tier: {req.tier}")
     if req.tier == "free":
@@ -564,8 +841,6 @@ def create_subscription(
 
     plan = PLANS[req.tier]
 
-    # In MVP, we set the subscription directly
-    # Stripe integration would go here in production
     current_user.subscription_tier = req.tier
     current_user.queries_remaining = plan["queries_per_month"]
     current_user.queries_limit = plan["queries_per_month"]
@@ -585,6 +860,7 @@ def create_subscription(
         "status": "active",
         "tier": req.tier,
         "queries_remaining": current_user.queries_remaining,
+        "note": "Direct subscription created (not via Stripe). Use /create-checkout for Stripe billing.",
     }
 
 
@@ -594,12 +870,25 @@ def cancel_subscription(
     db: Session = Depends(get_db),
 ):
     """Cancel the current subscription and revert to free tier."""
+    # Cancel in Stripe if there's a customer
+    if stripe.api_key and current_user.stripe_customer_id:
+        try:
+            subscriptions = stripe.Subscription.list(
+                customer=current_user.stripe_customer_id,
+                status="active",
+                limit=1,
+            )
+            for sub in subscriptions.data:
+                stripe.Subscription.delete(sub.id)
+        except stripe.error.StripeError:
+            pass  # Fall through to local cancellation
+
     current_user.subscription_tier = "free"
     current_user.queries_remaining = PLANS["free"]["queries_per_month"]
     current_user.queries_limit = PLANS["free"]["queries_per_month"]
     current_user.subscription_status = "canceled"
 
-    sub = (
+    local_sub = (
         db.query(Subscription)
         .filter(
             Subscription.user_id == current_user.id,
@@ -607,8 +896,8 @@ def cancel_subscription(
         )
         .first()
     )
-    if sub:
-        sub.status = "canceled"
+    if local_sub:
+        local_sub.status = "canceled"
 
     db.commit()
     return {"status": "canceled", "tier": "free"}
