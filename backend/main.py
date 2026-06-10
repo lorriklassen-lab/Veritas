@@ -52,11 +52,19 @@ app.add_middleware(
 )
 
 # Serve the built frontend as static files (for production/Railway)
-FRONTEND_DIST = Path(__file__).resolve().parent / "frontend" / "dist"
-if not FRONTEND_DIST.exists():
-    # Try relative from CWD (Dockerfile copies to ./frontend/dist)
-    FRONTEND_DIST = Path("frontend") / "dist"
-if FRONTEND_DIST.exists():
+FRONTEND_DIST = None
+for candidate in [
+    Path(__file__).resolve().parent.parent / "frontend" / "dist",  # local dev
+    Path(__file__).resolve().parent / "static",                     # Docker (copied to ./static)
+    Path("static"),                                                  # Docker (CWD)
+    Path("frontend") / "dist",                                       # fallback
+]:
+    if candidate.exists():
+        FRONTEND_DIST = candidate
+        break
+
+if FRONTEND_DIST and FRONTEND_DIST.exists():
+    print(f"✓ Serving frontend from: {FRONTEND_DIST}")
     app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
     
     @app.get("/{full_path:path}")
@@ -69,6 +77,8 @@ if FRONTEND_DIST.exists():
         if index.exists():
             return FileResponse(str(index))
         return JSONResponse({"detail": "Frontend not built"}, status_code=404)
+else:
+    print("⚠ Frontend dist not found — serving API only")
 
 # ============================================================
 # Pydantic Schemas
