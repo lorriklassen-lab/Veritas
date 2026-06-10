@@ -52,7 +52,10 @@ app.add_middleware(
 )
 
 # Serve the built frontend as static files (for production/Railway)
-FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+FRONTEND_DIST = Path(__file__).resolve().parent / "frontend" / "dist"
+if not FRONTEND_DIST.exists():
+    # Try relative from CWD (Dockerfile copies to ./frontend/dist)
+    FRONTEND_DIST = Path("frontend") / "dist"
 if FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
     

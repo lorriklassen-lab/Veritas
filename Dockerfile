@@ -8,8 +8,8 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 
-# Copy built frontend
-COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
+# Copy built frontend into the backend directory (expected path by main.py)
+COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
 # Install Python dependencies
 COPY backend/requirements.txt .
