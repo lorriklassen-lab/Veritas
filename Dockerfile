@@ -8,18 +8,14 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 
-# Copy built frontend to a clean static directory
-COPY --from=frontend-build /app/dist /app/static
-
 # Install Python dependencies
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend code
+# Copy backend code AND built frontend side by side
 COPY backend/ .
+COPY --from=frontend-build /app/dist ./frontend/dist
 
-# Expose the port
 EXPOSE 8000
 
-# Start the server
 CMD ["python", "main.py"]

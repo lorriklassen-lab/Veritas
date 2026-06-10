@@ -55,7 +55,8 @@ app.add_middleware(
 FRONTEND_DIST = None
 for candidate in [
     Path(__file__).resolve().parent.parent / "frontend" / "dist",  # local dev
-    Path(__file__).resolve().parent / "static",                     # Docker (copied to ./static)
+    Path(__file__).resolve().parent / "frontend" / "dist",         # Docker (backend + frontend/dist)
+    Path(__file__).resolve().parent / "static",                     # Docker (alternative)
     Path("static"),                                                  # Docker (CWD)
     Path("frontend") / "dist",                                       # fallback
 ]:
