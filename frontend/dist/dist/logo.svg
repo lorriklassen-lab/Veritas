@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" fill="none">
+  <defs>
+    <linearGradient id="gold-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#C5943A"/>
+      <stop offset="100%" stop-color="#A67B2E"/>
+    </linearGradient>
+    <linearGradient id="page-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F7F5F0"/>
+      <stop offset="100%" stop-color="#EDE8DF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Open book shape -->
+  <!-- Left page -->
+  <path d="M200 85 
+           C130 85 70 110 40 145 
+           L40 300 
+           C70 275 130 255 200 255 
+           Z" 
+        fill="url(#page-grad)" stroke="#1E293B" stroke-width="2.5"/>
+  
+  <!-- Right page -->
+  <path d="M200 85 
+           C270 85 330 110 360 145 
+           L360 300 
+           C330 275 270 255 200 255 
+           Z" 
+        fill="url(#page-grad)" stroke="#1E293B" stroke-width="2.5"/>
+
+  <!-- Spine line -->
+  <line x1="200" y1="85" x2="200" y2="255" stroke="#1E293B" stroke-width="2.5"/>
+
+  <!-- Left page text lines (subtle) -->
+  <line x1="70" y1="160" x2="180" y2="155" stroke="#D4CDBE" stroke-width="2" stroke-linecap="round"/>
+  <line x1="65" y1="185" x2="178" y2="180" stroke="#D4CDBE" stroke-width="2" stroke-linecap="round"/>
+  <line x1="60" y1="210" x2="176" y2="205" stroke="#D4CDBE" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- Right page text lines (subtle) -->
+  <line x1="220" y1="155" x2="330" y2="160" stroke="#D4CDBE" stroke-width="2" stroke-linecap="round"/>
+  <line x1="222" y1="180" x2="335" y2="185" stroke="#D4CDBE" stroke-width="2" stroke-linecap="round"/>
+  <line x1="224" y1="205" x2="340" y2="210" stroke="#D4CDBE" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- Cross formed by gold light beam through the center -->
+  <!-- Vertical beam of light/truth -->
+  <line x1="200" y1="90" x2="200" y2="250" stroke="url(#gold-grad)" stroke-width="5" stroke-linecap="round" opacity="0.7"/>
+  
+  <!-- Horizontal beam of light/truth -->
+  <line x1="130" y1="170" x2="270" y2="170" stroke="url(#gold-grad)" stroke-width="5" stroke-linecap="round" opacity="0.7"/>
+
+  <!-- Small cross at top of spine indicating the "truth" direction -->
+  <path d="M200 65 L200 50 M190 57 L210 57" stroke="#C5943A" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Bottom bookmark ribbon -->
+  <path d="M200 255 L200 310 L190 300 L180 310 L180 255" fill="#B33A3A" opacity="0.8"/>
+
+  <!-- Subtle book edges (page stack effect) -->
+  <path d="M200 88 C128 88 68 113 38 148" stroke="#D4CDBE" stroke-width="1.5" fill="none"/>
+  <path d="M200 88 C272 88 332 113 362 148" stroke="#D4CDBE" stroke-width="1.5" fill="none"/>
+</svg>
