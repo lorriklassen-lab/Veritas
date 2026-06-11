@@ -905,7 +905,33 @@ def cancel_subscription(
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "service": "veritas-api", "version": "0.1.0"}
+    # Check frontend dist paths for debugging
+    candidates = {
+        "parent.parent/frontend/dist": str(Path(__file__).resolve().parent.parent / "frontend" / "dist"),
+        "parent/frontend/dist": str(Path(__file__).resolve().parent / "frontend" / "dist"),
+        "parent/static": str(Path(__file__).resolve().parent / "static"),
+        "cwd/frontend/dist": str(Path("frontend") / "dist"),
+    }
+    found = {k: os.path.exists(v) for k, v in candidates.items()}
+    listing = {}
+    for k, v in candidates.items():
+        if os.path.exists(v):
+            try:
+                listing[k] = os.listdir(v)
+            except:
+                listing[k] = "error listing"
+    return {
+        "status": "ok",
+        "service": "veritas-api",
+        "version": "0.1.0",
+        "debug": {
+            "cwd": os.getcwd(),
+            "file": str(Path(__file__).resolve()),
+            "paths": candidates,
+            "found": found,
+            "listing": listing,
+        }
+    }
 
 
 @app.get("/api/key/check")
