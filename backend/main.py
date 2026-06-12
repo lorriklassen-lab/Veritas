@@ -67,17 +67,6 @@ for candidate in [
 if FRONTEND_DIST and FRONTEND_DIST.exists():
     print(f"✓ Serving frontend from: {FRONTEND_DIST}")
     app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
-    
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        # Don't intercept API routes
-        if full_path.startswith("api/") or full_path.startswith("api"):
-            from fastapi.responses import JSONResponse
-            return JSONResponse({"detail": "Not found"}, status_code=404)
-        index = FRONTEND_DIST / "index.html"
-        if index.exists():
-            return FileResponse(str(index))
-        return JSONResponse({"detail": "Frontend not built"}, status_code=404)
 else:
     print("⚠ Frontend dist not found — serving API only")
 
@@ -942,6 +931,23 @@ def check_api_key():
         "configured": has_key,
         "note": "Without an API key, fallback template responses will be used."
     }
+
+
+# ============================================================
+# Frontend SPA catch-all (must be last — after all API routes)
+# ============================================================
+
+if FRONTEND_DIST and FRONTEND_DIST.exists():
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_frontend(full_path: str):
+        # Don't intercept API routes
+        if full_path.startswith("api/") or full_path == "api" or full_path.startswith("api"):
+            from fastapi.responses import JSONResponse
+            return JSONResponse({"detail": "Not found"}, status_code=404)
+        index = FRONTEND_DIST / "index.html"
+        if index.exists():
+            return FileResponse(str(index))
+        return JSONResponse({"detail": "Frontend not built"}, status_code=404)
 
 
 # ============================================================
